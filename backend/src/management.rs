@@ -53,16 +53,16 @@ pub fn registration() -> ManagementRegistration {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-struct Start {
+pub(crate) struct Start {
     #[serde(default)]
-    method: Method,
-    account_id: String,
-    key_id: String,
-    request_model: String,
-    claimed_model: String,
-    tier: String,
+    pub(crate) method: Method,
+    pub(crate) account_id: String,
+    pub(crate) key_id: String,
+    pub(crate) request_model: String,
+    pub(crate) claimed_model: String,
+    pub(crate) tier: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -76,12 +76,12 @@ struct Control {
     action: String,
 }
 
-fn input<T: serde::de::DeserializeOwned>(
+pub(crate) fn input<T: serde::de::DeserializeOwned>(
     call: &TypedCall<ManagementRequest>,
 ) -> Result<T, PluginFault> {
     serde_json::from_slice(&call.payload).map_err(|_| invalid("请求参数格式错误"))
 }
-fn reply(value: Value) -> Result<TypedReply<ManagementResponse>, PluginFault> {
+pub(crate) fn reply(value: Value) -> Result<TypedReply<ManagementResponse>, PluginFault> {
     reply_status(200, value)
 }
 fn reply_status(status: u16, value: Value) -> Result<TypedReply<ManagementResponse>, PluginFault> {
@@ -92,7 +92,7 @@ fn reply_status(status: u16, value: Value) -> Result<TypedReply<ManagementRespon
     })
     .with_payload(serde_json::to_vec(&value).map_err(|_| invalid("响应编码失败"))?))
 }
-async fn find(host: &HostClient, id: &str) -> Result<(Run, u64), PluginFault> {
+pub(crate) async fn find(host: &HostClient, id: &str) -> Result<(Run, u64), PluginFault> {
     let (run, version) = host::read(host, slot_from_id(id)?)
         .await?
         .ok_or_else(|| invalid("检测记录不存在"))?;
@@ -155,7 +155,7 @@ async fn dispatch(
     service: &Service,
     call: TypedCall<ManagementRequest>,
 ) -> Result<TypedReply<ManagementResponse>, PluginFault> {
-    if !call.request.query.is_empty() || call.payload.len() > 8192 {
+    if !call.request.query.is_empty() || call.payload.len() > 65536 {
         return Err(invalid("管理请求大小或查询参数不符合接口"));
     }
     match (call.request.method.as_str(), call.request.path.as_str()) {
@@ -199,7 +199,9 @@ async fn dispatch(
         ("POST", "api/runs/get") => {
             let query: Identity = input(&call)?;
             let (run, _) = find(&call.host, &query.id).await?;
-            reply(json!({"run":run,"busy":service.execution.available_permits()==0}))
+            reply(
+                json!({"run":run,"busy":service.execution[slot_from_id(&query.id)?].try_lock().is_err()}),
+            )
         }
         ("POST", "api/runs/start") => start(service, &call.host, input(&call)?).await,
         ("POST", "api/runs/control") => control(service, &call.host, input(&call)?).await,
@@ -219,6 +221,14 @@ async fn start(
     host: &HostClient,
     query: Start,
 ) -> Result<TypedReply<ManagementResponse>, PluginFault> {
+    reply(json!({"run":create_run(service, host, query).await?}))
+}
+
+pub(crate) async fn create_run(
+    service: &Service,
+    host: &HostClient,
+    query: Start,
+) -> Result<Run, PluginFault> {
     let account = host::accounts(host)
         .await?
         .into_iter()
@@ -259,6 +269,7 @@ async fn start(
         slot,
         created_at: now_ms(),
         updated_at: now_ms(),
+        background: false,
         account_id: account.account_id,
         account_name: account_name_for_display(account.email.as_deref(), &account.name),
         credential_revision: account.credential_revision,
@@ -273,7 +284,7 @@ async fn start(
     };
     update_report(service, &mut run).await?;
     host::write(host, &run, version).await?;
-    reply(json!({"run":run}))
+    Ok(run)
 }
 
 async fn control(
@@ -287,9 +298,8 @@ async fn control(
     // 只有明确续测才修复上次中断；并发中的真实请求仍持有执行租约。
     let _execution = if query.action == "resume" {
         Some(
-            service
-                .execution
-                .try_acquire()
+            service.execution[slot_from_id(&query.id)?]
+                .try_lock()
                 .map_err(|_| invalid("当前题目尚在完成，请稍后刷新"))?,
         )
     } else {
@@ -304,7 +314,11 @@ async fn control(
         "pause" => run.status = Status::Paused,
         "stop" => {
             run.status = Status::Stopped;
-            if service.execution.available_permits() > 0 && run.inflight.is_some() {
+            if service.execution[slot_from_id(&query.id)?]
+                .try_lock()
+                .is_ok()
+                && run.inflight.is_some()
+            {
                 run.recover()?;
                 run.status = Status::Stopped;
             }
@@ -320,15 +334,18 @@ async fn control(
     reply(json!({"run":run}))
 }
 
-async fn step(
+pub(crate) async fn step(
     service: &Service,
     host: &HostClient,
     id: &str,
 ) -> Result<TypedReply<ManagementResponse>, PluginFault> {
-    let _execution = service
-        .execution
+    let _execution = service.execution[slot_from_id(id)?]
+        .try_lock()
+        .map_err(|_| invalid("当前任务已有题目正在执行，请等待该题完成"))?;
+    let _capacity = service
+        .capacity
         .try_acquire()
-        .map_err(|_| invalid("另一个检测请求正在执行，请等待该题完成"))?;
+        .map_err(|_| invalid("已有 3 个检测请求正在执行，请稍后继续"))?;
     let (snapshot, job, body) = {
         let _lock = service.state.lock().await;
         let (mut run, version) = find(host, id).await?;

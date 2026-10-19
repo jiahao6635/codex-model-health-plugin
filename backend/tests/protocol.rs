@@ -9,7 +9,7 @@ use gateway_plugin_sdk::{
 };
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     time::Duration,
 };
 use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
@@ -34,30 +34,37 @@ impl Peer {
             let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
                 .unwrap();
-            codex_model_health_plugin::engine::Engine::command(
-                [
-                    "docker",
-                    "run",
-                    "--rm",
-                    "-i",
-                    "--network",
-                    "none",
-                    "--read-only",
-                    "--tmpfs",
-                    "/tmp:rw,noexec,nosuid,size=128m",
-                    "-e",
-                    "PYTHONDONTWRITEBYTECODE=1",
-                    "-v",
-                    &format!("{}:/fixture:ro", root.display()),
-                    "--entrypoint",
-                    "python",
-                    "meow-llm-detector:4.5.4",
-                    "/fixture/engine/worker.py",
-                ]
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-            )
+            if let Some(python) = std::env::var_os("MODEL_HEALTH_TEST_PYTHON") {
+                codex_model_health_plugin::engine::Engine::command(vec![
+                    python,
+                    root.join("engine/worker.py").into_os_string(),
+                ])
+            } else {
+                codex_model_health_plugin::engine::Engine::command(
+                    [
+                        "docker",
+                        "run",
+                        "--rm",
+                        "-i",
+                        "--network",
+                        "none",
+                        "--read-only",
+                        "--tmpfs",
+                        "/tmp:rw,noexec,nosuid,size=128m",
+                        "-e",
+                        "PYTHONDONTWRITEBYTECODE=1",
+                        "-v",
+                        &format!("{}:/fixture:ro", root.display()),
+                        "--entrypoint",
+                        "python",
+                        "meow-llm-detector:4.5.4",
+                        "/fixture/engine/worker.py",
+                    ]
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                )
+            }
         };
         Self::with_engine(engine).await
     }
@@ -82,6 +89,11 @@ impl Peer {
             sequence: 1,
         };
         let manifest = Manifest::from_author_slice(include_bytes!("../../plugin.json")).unwrap();
+        assert_eq!(PROTOCOL_VERSION, 4);
+        assert_eq!(
+            manifest.contributes[&gateway_plugin_sdk::Capability::Management].version,
+            2
+        );
         peer.send(Frame::control(Message::Hello {
             handshake: Handshake {
                 protocol_version: PROTOCOL_VERSION,
@@ -97,7 +109,10 @@ impl Peer {
         .await;
         assert!(matches!(
             peer.receive().await.message,
-            Message::Ready { .. }
+            Message::Ready {
+                protocol_version: 4,
+                ..
+            }
         ));
         peer
     }
@@ -118,7 +133,37 @@ impl Peer {
     ) -> Result<Value, PluginFault> {
         let id = self.sequence;
         self.sequence += 2;
-        self.send(Frame{message:Message::Call{id,method:"management.handle".into(),context:CallContext{call_id:id,instance_id:"test".into(),generation:1,incarnation:"test".into(),stage:Stage::Management,timeout_ms:120000,resource_stream:false,resource_scope_id:"scope".into(),request_id:None,attempt_id:None,account_id:None,credential_revision:None},params:json!({"method":if input.is_some(){"POST"}else{"GET"},"path":path,"query":"","content_type":input.as_ref().map(|_|"application/json"),"headers":[]})},payload:input.map(|v|serde_json::to_vec(&v).unwrap()).unwrap_or_default()}).await;
+        let method = if input.is_some() { "POST" } else { "GET" };
+        self.send(Frame {
+            message: Message::Call {
+                id,
+                method: "management.handle".into(),
+                context: CallContext {
+                    request: Some(std::sync::Arc::new(gateway_plugin_sdk::RequestContext {
+                        method: method.into(),
+                        uri: format!("/api/plugins/test/{path}"),
+                        http_version: "HTTP/1.1".into(),
+                        headers: vec![],
+                        peer_addr: None,
+                        client_ip: None,
+                    })),
+                    call_id: id,
+                    instance_id: "test".into(),
+                    generation: 1,
+                    incarnation: "test".into(),
+                    stage: Stage::Management,
+                    timeout_ms: 120000,
+                    resource_stream: false,
+                    resource_scope_id: "scope".into(),
+                    request_id: None,
+                    attempt_id: None,
+                    account_id: None,
+                    credential_revision: None,
+                },
+                params: json!({"method":method,"path":path,"query":"","content_type":input.as_ref().map(|_|"application/json"),"headers":[]}),
+            },
+            payload: input.map(|v| serde_json::to_vec(&v).unwrap()).unwrap_or_default(),
+        }).await;
         loop {
             let frame = self.receive().await;
             match frame.message {
@@ -168,6 +213,10 @@ impl Peer {
 struct Host {
     state: BTreeMap<String, (Value, u64)>,
     executions: Vec<Value>,
+    groups: BTreeMap<String, BTreeSet<String>>,
+    key_groups: BTreeMap<String, Vec<String>>,
+    group_changes: Vec<Value>,
+    group_failure: bool,
     bodies: Vec<Value>,
     fail: bool,
     revision_changed: bool,
@@ -180,6 +229,13 @@ struct Host {
     http_body: Option<Vec<u8>>,
     http_requests: Vec<Value>,
     http_failure: bool,
+}
+fn state_key(params: &Value) -> String {
+    match params["namespace"].as_str().unwrap() {
+        "runs" => params["key"].as_str().unwrap().into(),
+        "automation" => format!("automation/{}", params["key"].as_str().unwrap()),
+        _ => panic!("unexpected state namespace"),
+    }
 }
 fn account(id: &str, revision: u64) -> Value {
     json!({"account_id":id,"provider_id":"openai","credential_revision":revision,"name":id,"email":null,"upstream_user_id":format!("user-{id}"),"upstream_account_id":format!("upstream-{id}"),"plan_type":"pro","authentication_kind":"oauth","enabled":true,"credential_state":"ready","has_refresh_token":true,"access_token_expires_at_ms":null,"next_refresh_at_ms":null})
@@ -208,7 +264,26 @@ impl Host {
         payload: Vec<u8>,
     ) -> Result<(Value, Vec<u8>), PluginFault> {
         self.callbacks.push(method.into());
-        let metadata = |value| Ok((value, vec![]));
+        let payload_method = [
+            "host.groups.ensure",
+            "host.groups.change_members",
+            "host.keys.ensure",
+            "host.data.keys.get",
+            "host.data.accounts.list",
+        ]
+        .contains(&method);
+        let params = if payload_method {
+            serde_json::from_slice(&payload).unwrap()
+        } else {
+            params
+        };
+        let metadata = |value: Value| {
+            if payload_method {
+                Ok((json!({}), serde_json::to_vec(&value).unwrap()))
+            } else {
+                Ok((value, vec![]))
+            }
+        };
         match method {
             "host.http.do_stream" => {
                 assert!(payload.is_empty());
@@ -283,21 +358,78 @@ impl Host {
                     json!({"keys":[{"id":if next {"key-a"}else{"key-b"},"name":"test key","enabled":true}],"next_cursor":if next {json!("key-a")}else{Value::Null}}),
                 )
             }
+            "host.groups.ensure" => {
+                self.groups
+                    .entry(params["resource_key"].as_str().unwrap().into())
+                    .or_default();
+                metadata(
+                    json!({"id":format!("group-{}",params["resource_key"].as_str().unwrap()),"name":params["name"],"enabled":true}),
+                )
+            }
+            "host.groups.change_members" => {
+                if self.group_failure {
+                    return Err(PluginFault::new(
+                        ErrorCode::Upstream,
+                        "fixture member write failed",
+                    ));
+                }
+                let members = self
+                    .groups
+                    .get_mut(params["resource_key"].as_str().unwrap())
+                    .unwrap();
+                for id in params["remove"].as_array().unwrap() {
+                    members.remove(id.as_str().unwrap());
+                }
+                for id in params["add"].as_array().unwrap() {
+                    members.insert(id.as_str().unwrap().into());
+                }
+                self.group_changes.push(params.clone());
+                metadata(
+                    json!({"added":params["add"].as_array().unwrap().len(),"removed":params["remove"].as_array().unwrap().len()}),
+                )
+            }
+            "host.keys.ensure" => {
+                let id = if params["resource_key"] == "probe-key" {
+                    "key-b"
+                } else {
+                    "business-key"
+                };
+                self.key_groups.insert(
+                    id.into(),
+                    params["group_resource_keys"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|g| format!("group-{}", g.as_str().unwrap()))
+                        .collect(),
+                );
+                metadata(json!({"id":id,"name":params["name"],"enabled":true}))
+            }
+            "host.data.accounts.list" => {
+                let accounts = ["account-a", "account-b"].into_iter().map(|id| {
+                    let a = self.account(id);
+                    let groups = self.groups.iter().filter(|(_, members)| members.contains(id)).map(|(key,_)| format!("group-{key}")).collect::<Vec<_>>();
+                    json!({"account_id":id,"provider_id":a["provider_id"],"name":a["name"],"email":a["email"],"enabled":a["enabled"],"group_ids":groups,"updated_at_ms":0})
+                }).collect::<Vec<_>>();
+                metadata(json!({"schema_version":1,"accounts":accounts,"next_cursor":null}))
+            }
+            "host.data.keys.get" => metadata(
+                json!({"schema_version":1,"client_key_id":params["client_key_id"],"enabled":true,"group_ids":self.key_groups.get(params["client_key_id"].as_str().unwrap()).cloned().unwrap_or_default()}),
+            ),
             "host.models.list" => {
                 assert_eq!(params["client_key_id"], "key-b");
                 assert_eq!(params["protocol"], "openai");
                 metadata(json!({"models":["gpt-6-astra"]}))
             }
             "host.state.get" => {
-                assert_eq!(params["namespace"], "runs");
-                let record = self.state.get(params["key"].as_str().unwrap()).map(
+                let key = state_key(&params);
+                let record = self.state.get(&key).map(
                     |(value, version)| json!({"value":value,"version":version,"schema_version":1}),
                 );
                 metadata(json!({"record":record}))
             }
             "host.state.put" => {
-                assert_eq!(params["namespace"], "runs");
-                let key = params["key"].as_str().unwrap().to_string();
+                let key = state_key(&params);
                 let current = self.state.get(&key).map(|(_, v)| *v);
                 if current != params["expected_version"].as_u64() {
                     return Err(PluginFault::new(ErrorCode::Conflict, "CAS conflict"));
@@ -379,15 +511,18 @@ async fn exact_account_key_pagination_and_request_evidence() {
     let mut peer = Peer::new().await;
     let mut host = Host::default();
     let boot = peer.api("api/bootstrap", None, &mut host).await.unwrap();
-    let accounts = boot["accounts"].as_array().unwrap();
-    assert_eq!(accounts.len(), 2);
-    for (account, id) in accounts.iter().zip(["account-a", "account-b"]) {
-        assert!(account.get("email").is_some());
-        assert_eq!(account["id"], id);
-        assert_eq!(account["name"], id);
-        assert_eq!(account["provider"], "openai");
-        assert_eq!(account["plan"], "pro");
-    }
+    assert_eq!(boot["accounts"].as_array().unwrap().len(), 2);
+    let first = boot["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == "account-b")
+        .unwrap();
+    assert!(first.get("email").is_some());
+    assert_eq!(first["id"], "account-b");
+    assert_eq!(first["name"], "account-b");
+    assert_eq!(first["provider"], "openai");
+    assert_eq!(first["plan"], "pro");
     assert!(!boot.to_string().contains("access_token"));
     assert_eq!(boot["sources"].as_array().unwrap().len(), 2);
     assert!(
@@ -1119,4 +1254,144 @@ async fn metadata_and_token_refresh_do_not_change_account_identity() {
     assert_eq!(result["run"]["account_identity"], run["account_identity"]);
     assert_eq!(result["run"]["attempts"].as_array().unwrap().len(), 2);
     assert_eq!(host.executions.len(), 2);
+}
+
+#[tokio::test]
+async fn parallel_runs_have_independent_locks_and_a_three_request_limit() {
+    let mut host = Host::default();
+    let mut peer = Peer::new().await;
+    let mut runs = Vec::new();
+    for _ in 0..4 {
+        runs.push(peer.start(&mut host).await);
+    }
+    let mut responses = BTreeMap::new();
+    let mut held = Vec::new();
+    let send_call = |id: u64, path: &str, run_id: &Value| Frame {
+        message: Message::Call {
+            id,
+            method: "management.handle".into(),
+            context: CallContext {
+                request: None,
+                call_id: id,
+                instance_id: "test".into(),
+                generation: 1,
+                incarnation: "test".into(),
+                stage: Stage::Management,
+                timeout_ms: 120000,
+                resource_stream: false,
+                resource_scope_id: "scope".into(),
+                request_id: None,
+                attempt_id: None,
+                account_id: None,
+                credential_revision: None,
+            },
+            params: json!({"method":"POST","path":path,"query":"","content_type":"application/json","headers":[]}),
+        },
+        payload: serde_json::to_vec(&if path.ends_with("control") {
+            json!({"id":run_id,"action":"resume"})
+        } else {
+            json!({"id":run_id})
+        })
+        .unwrap(),
+    };
+    // Three suspended model streams keep the leases live while probing concurrency controls.
+    for (i, run) in runs.iter().take(3).enumerate() {
+        peer.send(send_call(101 + i as u64 * 2, "api/runs/step", &run["id"]))
+            .await;
+    }
+    while held.len() < 3 {
+        let frame = peer.receive().await;
+        match frame.message {
+            Message::Callback {
+                id, method, params, ..
+            } => {
+                let (result, payload) = host.callback(&method, params, frame.payload).unwrap();
+                let reply = Frame {
+                    message: Message::Result { id, result },
+                    payload,
+                };
+                if method == "host.model.stream_read" {
+                    held.push(reply)
+                } else {
+                    peer.send(reply).await
+                }
+            }
+            _ => panic!("parallel requests completed before their streams were released"),
+        }
+    }
+    assert_eq!(host.executions.len(), 3);
+    peer.send(send_call(107, "api/runs/step", &runs[3]["id"]))
+        .await;
+    peer.send(send_call(109, "api/runs/control", &runs[0]["id"]))
+        .await;
+    peer.send(send_call(111, "api/runs/step", &runs[0]["id"]))
+        .await;
+    while responses.len() < 3 {
+        let frame = peer.receive().await;
+        match frame.message {
+            Message::Result { id, result } => {
+                assert_eq!(result["status"], 400);
+                responses.insert(id, ());
+            }
+            other => panic!("unexpected control frame: {other:?}"),
+        }
+    }
+    assert_eq!(host.executions.len(), 3);
+    for reply in held {
+        peer.send(reply).await;
+    }
+    let mut completed = 0;
+    while completed < 3 {
+        let frame = peer.receive().await;
+        match frame.message {
+            Message::Callback {
+                id, method, params, ..
+            } => {
+                let (result, payload) = host.callback(&method, params, frame.payload).unwrap();
+                peer.send(Frame {
+                    message: Message::Result { id, result },
+                    payload,
+                })
+                .await
+            }
+            Message::Result { result, .. } => {
+                assert_eq!(result["status"], 200);
+                let body: Value = serde_json::from_slice(&frame.payload).unwrap();
+                assert_eq!(body["run"]["attempts"].as_array().unwrap().len(), 1);
+                assert!(body["run"]["inflight"].is_null());
+                completed += 1;
+            }
+            other => panic!("unexpected completion frame: {other:?}"),
+        }
+    }
+    peer.sequence = 113;
+    peer.api(
+        "api/runs/step",
+        Some(json!({"id":runs[3]["id"]})),
+        &mut host,
+    )
+    .await
+    .unwrap();
+    assert_eq!(host.executions.len(), 4);
+}
+
+#[tokio::test]
+async fn automation_routes_are_removed_and_do_not_execute_models() {
+    let mut peer = Peer::new().await;
+    let mut host = Host::default();
+    for path in [
+        "api/automation",
+        "api/automation/batch",
+        "api/automation/settings",
+    ] {
+        let error = peer
+            .api(path, Some(json!({})), &mut host)
+            .await
+            .unwrap_err();
+        assert_eq!(error.http_status, Some(404));
+    }
+    assert!(host.executions.is_empty());
+    let manifest: Value = serde_json::from_slice(include_bytes!("../../plugin.json")).unwrap();
+    assert!(manifest["contributes"]["maintenance"].is_null());
+    assert!(manifest["contributes"]["command_line"].is_null());
 }

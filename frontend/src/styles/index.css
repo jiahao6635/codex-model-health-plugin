@@ -43,3 +43,7 @@ h2 { margin: 0; font-size: 1.125rem; font-weight: 700; }
 .sample-error { padding: .75rem; background: var(--cp-color-warning-container); color: var(--cp-color-warning-on-container); border-radius: var(--cp-border-radius); font-size: .8rem; overflow-wrap: anywhere; }
 @media (max-width: 1000px) { .setup-grid { grid-template-columns: 1fr; } }
 @media (max-width: 600px) { .form-grid, .report-grid { grid-template-columns: 1fr; } .progress-facts { grid-template-columns: 1fr 1fr; } .start-row { align-items: stretch; flex-direction: column; } .start-row button { justify-content: center; } }
+.monitor-toolbar { display: flex; align-items: end; gap: 1rem; flex-wrap: wrap; margin: 1.2rem 0; }
+.monitor-toolbar > p { flex: 2 1 300px; line-height: 1.65; }
+.monitor-batch { border-top: 1px solid var(--cp-color-border-secondary); margin-top: 1.8rem; padding-top: 1.3rem; }
+.monitor-batch h3 { margin: 0; font-size: 1rem; }

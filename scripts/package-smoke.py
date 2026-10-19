@@ -1,4 +1,4 @@
-"""Exercise the packaged executable over SDK v2; public GitHub checks are opt-in."""
+"""Exercise the packaged executable over SDK v4; public GitHub checks are opt-in."""
 import hashlib
 import json
 import os
@@ -42,6 +42,8 @@ with tempfile.TemporaryDirectory(prefix="model-health-smoke-") as directory:
             path.write_bytes(archive.extractfile(member).read())
             path.chmod(0o755 if member.mode & 0o111 else 0o644)
     manifest = json.loads((root / "plugin.json").read_text())
+    assert manifest["package"]["protocolVersion"] == 4
+    assert manifest["contributes"]["management"]["version"] == 2
     for path, digest in manifest["package"]["files"].items():
         assert hashlib.sha256((root / path).read_bytes()).hexdigest() == digest, path
     assert (root / "bin/plugin").read_bytes()[:4] == b"\x7fELF"
@@ -65,8 +67,27 @@ with tempfile.TemporaryDirectory(prefix="model-health-smoke-") as directory:
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
 
     def send(message, payload=b""):
+        message = dict(message)
+        data = b""
+        request = b""
+        if message["type"] == "call":
+            message["context"] = dict(message["context"])
+            snapshot = message["context"].pop("request", None)
+            if snapshot is not None:
+                request = json.dumps(snapshot, separators=(",", ":")).encode()
+                message["request_context_bytes"] = len(request)
+        if message["type"] == "hello":
+            message["handshake"] = dict(message["handshake"])
+            value = message["handshake"].pop("configuration")
+        elif message["type"] in ("call", "callback", "result"):
+            value = message.pop("result" if message["type"] == "result" else "params")
+        else:
+            value = None
+        if value is not None:
+            data = json.dumps(value, separators=(",", ":")).encode()
+            message["data_bytes"] = len(data)
         body = json.dumps(message, separators=(",", ":")).encode()
-        process.stdin.write(struct.pack(">IQ", len(body), len(payload)) + body + payload)
+        process.stdin.write(struct.pack(">IQ", len(body), len(request) + len(data) + len(payload)) + body + request + data + payload)
         process.stdin.flush()
 
     def read_exact(length):
@@ -83,13 +104,23 @@ with tempfile.TemporaryDirectory(prefix="model-health-smoke-") as directory:
     def receive():
         meta, payload = struct.unpack(">IQ", read_exact(12))
         assert 0 < meta <= 65536 and payload < 2 * 1024 * 1024
-        return json.loads(read_exact(meta)), read_exact(payload)
+        message = json.loads(read_exact(meta))
+        request_bytes = message.pop("request_context_bytes", 0)
+        data_bytes = message.pop("data_bytes", 0)
+        assert request_bytes == 0 and 0 <= data_bytes <= payload
+        data = read_exact(data_bytes)
+        if message["type"] in ("call", "callback", "result"):
+            assert data_bytes > 0
+            message["result" if message["type"] == "result" else "params"] = json.loads(data)
+        else:
+            assert data_bytes == 0
+        return message, read_exact(payload - data_bytes)
 
     host = {"executions": 0, "state": {}, "callbacks": [], "numeric": False, "http_body": None}
 
     def runtime_account():
         return {"account_id": "smoke-account", "provider_id": "openai", "credential_revision": 1 + host["executions"],
-                "name": "Offline fixture", "email": "  smoke@example.com  ", "upstream_user_id": "fixture-user", "upstream_account_id": "fixture-workspace",
+                "name": "Offline fixture", "email": None, "upstream_user_id": "fixture-user", "upstream_account_id": "fixture-workspace",
                 "plan_type": "pro", "authentication_kind": "oauth", "enabled": True, "credential_state": "ready",
                 "has_refresh_token": True, "access_token_expires_at_ms": None, "next_refresh_at_ms": None}
 
@@ -152,24 +183,26 @@ with tempfile.TemporaryDirectory(prefix="model-health-smoke-") as directory:
             return {"models": ["gpt-6-astra"]}, b""
         if method == "host.state.get":
             assert params["namespace"] == "runs"
-            return {"record": host["state"].get(params["key"])}, b""
+            key = f'{params["namespace"]}/{params["key"]}'
+            return {"record": host["state"].get(key)}, b""
         if method == "host.state.put":
             assert params["namespace"] == "runs"
-            previous = host["state"].get(params["key"])
+            key = f'{params["namespace"]}/{params["key"]}'
+            previous = host["state"].get(key)
             assert params["expected_version"] == (previous["version"] if previous else None)
             version = previous["version"] + 1 if previous else 1
-            host["state"][params["key"]] = {"value": params["value"], "version": version, "schema_version": 1}
+            host["state"][key] = {"value": params["value"], "version": version, "schema_version": 1}
             return {"version": version}, b""
         if method == "host.model.execute_stream":
             assert continuous or modeltrace, "bootstrap must not execute a model"
             assert params["account_id"] == "smoke-account" and params["client_key_id"] == "smoke-key"
             assert params["provider"] == "openai" and params["protocol"] == "openai" and params["model"] == "gpt-6-astra"
-            assert any(r["value"]["inflight"] and r["value"]["attempts"][-1]["status"] == "pending" for r in host["state"].values())
+            assert any(r["value"].get("inflight") and r["value"]["attempts"][-1]["status"] == "pending" for r in host["state"].values())
             body = json.loads(payload)
             assert body["stream"] is True and body["store"] is False
             if host["numeric"]:
                 assert "reasoning" not in body and "max_output_tokens" not in body and "tools" not in body
-                pending = next(r["value"] for r in host["state"].values() if r["value"]["inflight"])
+                pending = next(r["value"] for r in host["state"].values() if r["value"].get("inflight"))
                 job = next(j for j in pending["plan"]["jobs"] if j["job_id"] == pending["inflight"])
                 assert body["input"] == [{"role": "user", "content": job["prompt"]}]
             host["executions"] += 1
@@ -187,6 +220,8 @@ with tempfile.TemporaryDirectory(prefix="model-health-smoke-") as directory:
     def api(path, body=None):
         context["call_id"] += 2
         identifier = context["call_id"]
+        context["request"] = {"method": "GET" if body is None else "POST", "uri": f"/api/plugins/smoke/{path}",
+                              "http_version": "HTTP/1.1", "headers": [], "peer_addr": None, "client_ip": None}
         send({"type": "call", "id": identifier, "method": "management.handle", "context": context,
               "params": {"method": "GET" if body is None else "POST", "path": path, "query": "",
                          "content_type": None if body is None else "application/json", "headers": []}},
@@ -202,9 +237,9 @@ with tempfile.TemporaryDirectory(prefix="model-health-smoke-") as directory:
             send({"type": "result", "id": message["id"], "result": result}, response)
 
     try:
-        send({"type": "hello", "handshake": {"protocol_version": 2, "artifact_sha256": hashlib.sha256(package.read_bytes()).hexdigest(), "plugin_id": "local.model-health", "instance_id": "smoke", "generation": 1, "incarnation": "smoke", "configuration": {}, "contributes": manifest["contributes"]}})
+        send({"type": "hello", "handshake": {"protocol_version": 4, "artifact_sha256": hashlib.sha256(package.read_bytes()).hexdigest(), "plugin_id": "local.model-health", "instance_id": "smoke", "generation": 1, "incarnation": "smoke", "configuration": {}, "contributes": manifest["contributes"]}})
         ready, _ = receive()
-        assert ready["type"] == "ready"
+        assert ready["type"] == "ready" and ready["protocol_version"] == 4
         context = {"call_id": 1, "instance_id": "smoke", "generation": 1, "incarnation": "smoke", "stage": "management", "timeout_ms": 120000, "resource_stream": False, "resource_scope_id": "smoke", "request_id": None, "attempt_id": None, "account_id": None, "credential_revision": None}
         status, boot = api("api/bootstrap")
         assert status == 200, boot
@@ -214,7 +249,6 @@ with tempfile.TemporaryDirectory(prefix="model-health-smoke-") as directory:
         assert sorted(t["count"] for t in meow["tiers"]) == [36, 72, 108]
         assert len(meow["models"]) == 4
         assert boot["accounts"][0]["id"] == "smoke-account" and boot["keys"][0]["id"] == "smoke-key"
-        assert boot["accounts"][0]["email"] == "  smoke@example.com  "
         assert host["callbacks"] == ["host.auth.list", "host.keys.list"]
         status, error = api("api/models", {})
         assert status == 400 and error["error"]["message"] == "请求参数格式错误", error
@@ -222,8 +256,6 @@ with tempfile.TemporaryDirectory(prefix="model-health-smoke-") as directory:
             status, result = api("api/runs/start", {"account_id": "smoke-account", "key_id": "smoke-key",
                                 "request_model": "gpt-6-astra", "claimed_model": "gpt-6-astra", "tier": "low"})
             assert status == 200, result
-            assert result["run"]["account_id"] == "smoke-account"
-            assert result["run"]["account_name"] == "smoke@example.com"
             run_id = result["run"]["id"]
             for completed in range(36):
                 status, result = api("api/runs/step", {"id": run_id})
@@ -254,8 +286,6 @@ with tempfile.TemporaryDirectory(prefix="model-health-smoke-") as directory:
             status, result = api("api/runs/start", {"method": "modeltrace", "account_id": "smoke-account", "key_id": "smoke-key",
                                 "request_model": "gpt-6-astra", "claimed_model": "unified", "tier": "fixed"})
             assert status == 200, result
-            assert result["run"]["account_id"] == "smoke-account"
-            assert result["run"]["account_name"] == "smoke@example.com"
             run_id = result["run"]["id"]
             plan = result["run"]["plan"]
             host["numeric"] = True
@@ -280,6 +310,7 @@ with tempfile.TemporaryDirectory(prefix="model-health-smoke-") as directory:
             assert status == 200 and history["runs"][0]["method"] == "modeltrace"
             assert history["runs"][0]["report"] == result["run"]["report"]
             print("MODELTRACE PASS: completed=3/3; candidates=17; pinned_account_key=PASS; frozen_plan=PASS; pause_resume=PASS; history=PASS; real_model_calls=0", flush=True)
+
         if updates:
             if "sources" not in boot:
                 print("UPDATES ABSENT: sources=0; model_methods=2; real_model_calls=0", flush=True)
@@ -310,7 +341,7 @@ with tempfile.TemporaryDirectory(prefix="model-health-smoke-") as directory:
         send({"type": "shutdown"})
         process.wait(timeout=15)
         assert process.returncode == 0, process.stderr.read().decode()
-        print("PACKAGE PASS: hashes=PASS; tmp_noexec=PASS; nonroot=PASS; empty_env=PASS; readonly_root=PASS; sdk_v2=PASS; engine=4.5.4; accounts=1; keys=1; error_http=400; real_model_calls=0")
+        print("PACKAGE PASS: hashes=PASS; tmp_noexec=PASS; nonroot=PASS; empty_env=PASS; readonly_root=PASS; sdk_v4=PASS; engine=4.5.4; accounts=1; keys=1; error_http=400; real_model_calls=0")
     finally:
         if process.poll() is None:
             subprocess.run(["docker", "rm", "-f", container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)

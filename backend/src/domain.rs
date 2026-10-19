@@ -26,6 +26,8 @@ pub struct Run {
     pub slot: usize,
     pub created_at: u64,
     pub updated_at: u64,
+    #[serde(default)]
+    pub background: bool,
     pub account_id: String,
     pub account_name: String,
     pub credential_revision: u64,
@@ -139,7 +141,7 @@ impl Run {
     }
     pub fn summary(&self) -> Value {
         json!({"id":self.id,"created_at":self.created_at,"updated_at":self.updated_at,
-            "account_name":self.account_name,"account_id":self.account_id,"key_name":self.key_name,
+            "background":self.background,"account_name":self.account_name,"account_id":self.account_id,"key_name":self.key_name,
             "request_model":self.plan["request_model"],"claimed_model":self.plan["claimed_model"],
             "method":self.plan.get("method").cloned().unwrap_or_else(|| json!("meow")),
             "tier":self.plan["tier"],"baseline_hash":self.plan["hash"],"status":self.status,
@@ -168,6 +170,7 @@ mod tests {
             slot: 0,
             created_at: 0,
             updated_at: 0,
+            background: false,
             account_id: "a".into(),
             account_name: "a".into(),
             credential_revision: 1,

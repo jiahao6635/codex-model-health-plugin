@@ -14,14 +14,16 @@ use tokio::sync::{Mutex, Semaphore};
 pub(crate) struct Service {
     engine: engine::Engine,
     state: Mutex<()>,
-    execution: Semaphore,
+    execution: [Mutex<()>; domain::SLOTS],
+    capacity: Semaphore,
     updates: updates::UpdateChecker,
 }
 pub fn plugin(engine: engine::Engine) -> Result<ComposedPlugin, AuthorError> {
     let service = Arc::new(Service {
         engine,
         state: Mutex::new(()),
-        execution: Semaphore::new(1),
+        execution: std::array::from_fn(|_| Mutex::new(())),
+        capacity: Semaphore::new(3),
         updates: updates::UpdateChecker::default(),
     });
     PluginBuilder::from_json(include_bytes!("../../plugin.json"))?

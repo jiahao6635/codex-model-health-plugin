@@ -2,7 +2,7 @@
 
 为 [Codex Proxy RS](https://github.com/zyycn/codex-proxy-rs) 提供独立的账号模型体检页面：选择已有账号与计量 Key，通过原生代理和请求链路运行 **Meow / ModelTrace** 两种行为指纹检测，无需再次填写 API 地址或密钥，也不修改主项目。
 
-[下载 v0.2.2](https://github.com/R-lmmortal/codex-model-health-plugin/releases/tag/v0.2.2) · [反馈问题](https://github.com/R-lmmortal/codex-model-health-plugin/issues) · [插件使用规范](https://github.com/zyycn/codex-proxy-rs/blob/main/docs/plugins.md)
+**当前版本 v0.3.2，适配 CPS v3.29.3。** [下载安装包](https://github.com/jiahao6635/codex-model-health-plugin/releases/tag/v0.3.2) · [上游仓库](https://github.com/R-lmmortal/codex-model-health-plugin) · [反馈问题](https://github.com/jiahao6635/codex-model-health-plugin/issues) · [插件使用规范](https://github.com/zyycn/codex-proxy-rs/blob/main/docs/plugins.md)
 
 ![插件页面（模拟数据，不代表真实检测结果）](docs/screenshots/overview.png)
 
@@ -15,7 +15,7 @@
 | [Meow LLM Detector — chen-006](https://github.com/chen-006/meow-llm-detector) | 题目、响应解析、答案归一化与行为概率评分；引擎 4.5.4 / 基线 4.5.3-predictive.2；[提交 0f31d4a](https://github.com/chen-006/meow-llm-detector/tree/0f31d4a96c9e953277ab8e337d3dbd3ec57b316e) | [PolyForm Noncommercial 1.0.0](vendor/meow/LICENSE) |
 | [ModelTrace — xqy2006](https://github.com/xqy2006/ModelTrace) | 原始指纹算法与统一候选库；[提交 d4131b3](https://github.com/xqy2006/ModelTrace/tree/d4131b30243dfa05e70180b5eedde742103f1d73) | [MIT](vendor/modeltrace/LICENSE) |
 
-宿主集成使用 [Codex Proxy 公开 SDK](https://github.com/zyycn/codex-proxy-rs/tree/fef52b3717019513108733549508377a309f129d/backend/crates/gateway-plugin/sdk)、[@codex-proxy/ui](https://github.com/zyycn/codex-proxy-ui) v0.3.2，并参考 [官方插件示例与规范](https://github.com/zyycn/codex-proxy-plugins)。
+宿主集成使用 [Codex Proxy 公开 SDK](https://github.com/zyycn/codex-proxy-rs/tree/16d8a3f87309d9346a5f204673390fe20478b40e/backend/crates/gateway-plugin/sdk)、[@codex-proxy/ui](https://github.com/zyycn/codex-proxy-ui) v0.3.2，并参考 [官方插件示例与规范](https://github.com/zyycn/codex-proxy-plugins)。
 
 完整集成包按 [PolyForm Noncommercial 1.0.0](LICENSE) 分发，包含非商业用途条件；ModelTrace 等第三方文件仍保留各自的许可证。本仓库是源码公开项目，不将整个包宣称为 MIT 或无商业用途限制。原始版权声明、第三方组件声明与依赖许可证见 [NOTICE](NOTICE)，安装包中也附带相关文件。
 
@@ -23,42 +23,45 @@
 
 | 项目 | 当前支持 |
 | --- | --- |
-| 插件 ID / 版本 | `local.model-health` / `0.2.2` |
-| 宿主清单范围 | `>=3.19.0, <4.0.0`；实际使用验证为 3.19.0，其他版本需另验 |
+| 插件 ID / 版本 | `local.model-health` / `0.3.2` |
+| 宿主清单范围 | `>=3.29.3, <4.0.0`；固定 SDK 的离线协议验证；CPS 3.29.3 / RPC v4；线上部署验收待执行 |
 | Release 平台 | Linux x86_64，glibc 2.36+（如 Debian 12）；不适用于 ARM64、Alpine/musl 或 Windows |
 | 运行方式 | `trustedProcess`，插件以宿主系统身份运行，安装代表完整信任；不是操作系统沙箱 |
-| 扩展能力 | 独立管理页面；不注册请求中间件、调度器、观察器或自动维护任务 |
+| 扩展能力 | 独立管理页面、页面内串行或并行批量测试 |
 
-在 **插件管理 → 安装插件 → GitHub** 中填写：
+v0.3.2 使用 CPS v3.29.3 对应的 SDK 与打包 CLI，协议为 RPC v4，管理能力为 v2；不支持旧宿主。旧 v0.2.x / v0.3.1 的 RPC v2 安装包不能直接用于最新 CPS，修改清单版本也不能转换协议。
 
-```text
-仓库：R-lmmortal/codex-model-health-plugin
-版本标签：v0.2.2（或留空查询最新稳定版）
-```
+从 [v0.3.2 Release](https://github.com/jiahao6635/codex-model-health-plugin/releases/tag/v0.3.2) 下载 `local.model-health-0.3.2-x86_64-unknown-linux-gnu.tar.gz` 及同名校验文件（本地构建输出在 `dist/`），在插件详情上传并切换同一插件的版本；保留插件 ID、状态 schema 和已有检测历史。不能把源码 ZIP 当插件。
 
-选择 `local.model-health-0.2.2-x86_64-unknown-linux-gnu.tar.gz`，核对平台与摘要后安装并启用。也可从 [Releases](https://github.com/R-lmmortal/codex-model-health-plugin/releases) 下载该文件，通过“上传包”安装。请不要上传 GitHub 自动生成的 **Source code (zip/tar.gz)**，它们是源码而不是插件制品。
-
-Release 同时提供同名 `.tar.gz.sha256`；下载两个附件后可校验：
+安装包同时提供同名 `.tar.gz.sha256`；在 `dist/` 目录校验后，通过 **插件管理 → 插件详情 → 上传包** 更新：
 
 ```sh
-sha256sum -c local.model-health-0.2.2-x86_64-unknown-linux-gnu.tar.gz.sha256
-# macOS：shasum -a 256 -c local.model-health-0.2.2-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c local.model-health-0.3.2-x86_64-unknown-linux-gnu.tar.gz.sha256
+# macOS：shasum -a 256 -c local.model-health-0.3.2-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
-保留 `local.model-health` 是为了让原先本地安装的版本继续沿用同一插件身份与历史，不是更换发布账号。仓库与发布者主页为 [R-lmmortal](https://github.com/R-lmmortal)。已有本地安装可在插件详情设置 GitHub 更新来源，或上传新版后确认切换；不要为了更新而删除原配置或私有数据。
+GitHub 更新来源填写 `jiahao6635/codex-model-health-plugin`，标签填写 `v0.3.2`。此仓库为原项目的 Fork；保留 `local.model-health` 身份以沿用已有历史，不要为了更新而删除原配置或私有数据。
 
 ## 使用
 
 1. 按上述方式安装并启用插件。
-2. 打开「账号模型体检」，选择已启用的 OpenAI 账号和已有 Key 的名称。账号优先显示去除首尾空白后的邮箱；没有邮箱时显示账号名称。新建检测保存该显示名称，旧历史仍保留检测当时的名称；请求绑定始终使用账号 ID。
+2. 打开「账号模型体检」，选择已启用的 OpenAI 账号和已有 Key 的名称。
 3. 选择该 Key 可见的请求模型及检测方法。Meow 选择对照模型和 36 / 72 / 108 题档位；ModelTrace 使用统一候选库，固定 3 轮数字选择。切换方法保留账号、Key 和请求模型。
 4. 点击「开始检测」。宿主按所选 Key 计量；每次只执行一个请求。所选 Key 的分组/模型权限仍由主服务校验。
-5. 失败会暂停；点「继续检测」才会继续。每档最多追加 50% 重试预算。离开或隐藏页面后不再发送下一题；进行中的题目可能完成或中断，已计入的尝试不会清零。页面不承担无人值守后台任务。
+5. 失败会暂停；点「继续检测」才会继续。每档最多追加 50% 重试预算。离开或隐藏页面后不再发送下一题；进行中的题目可能完成或中断，已计入的尝试不会清零。单次及批量测试均由页面推进，无需服务器定时服务。
 6. 从历史打开报告或续测。仅在 16 个槽位满后替换最早的已结束记录，不覆盖未结束任务。
 
 Meow 报告给出行为匹配、行为偏移或证据不足。ModelTrace 报告展示前 5 个候选模型及家族概率，完整 17 个候选的结果保存在任务报告中；满 3 个有效样本才给出「更接近」结论。概率是在冻结候选库内、均匀先验下的相对分布，库外模型也会归到已有候选，不代表真实身份概率。
 
 两种方法都不是智商分数或模型身份认证，分数不混用。仍只选择宿主 OpenAI 账号；ModelTrace 候选库包含 GPT / Claude 家族，不等于新增 Claude 原生账号接入。只有相同方法、基线、模型与采样条件的复测才适合比较。
+
+## 批量测试（v0.3.1）
+
+1. 「检测账号」选项只显示账户邮箱；未提供邮箱的账户显示「未提供邮箱」。选择账户、计量 Key、请求模型与检测档位后，点击「加入批量列表」。同一账户再次添加会更新该行，最多 100 个账户。ModelTrace 沿用统一候选库，不需要另外选择期望指纹。
+2. 选择「串行」或「并行」后点击「开始批量测试」。串行完成一个账户后再检测下一个；并行最多同时检测 3 个账户。每个账户内部保持逐题执行，所选 Key 的并发、额度和模型权限仍由 CPS 校验。
+3. 支持暂停、继续和取消；当前请求完成后停止发下一题，保留已发生的用量和结果。某个账户出错会显示原因，不阻断其他账户；可打开报告手动续测。
+4. **保持页面打开且可见**。切走页面会暂停，返回后点击「继续批次」；关闭页面后不继续执行。批量列表和批次进度仅保存在当前页面；重新打开可从服务器检测历史查看报告或逐个续测。历史最多 16 条，较早的已结束报告可能被后续检测替换。
+5. 本版移除后台检测、定时检测、自动隔离与恢复探针，不需额外后台服务。升级保持同一插件 ID 和已有检测历史；旧自动监测状态仅保留为兼容数据，不再执行。若曾配置 v0.3.0 的外部 timer，请先停止它：`sudo systemctl disable --now codex-model-health.timer`。曾经隔离的业务组成员不会自动恢复，请在 CPS 中核对实际成员。
 
 ## 数据与执行
 
@@ -76,11 +79,11 @@ Meow 报告给出行为匹配、行为偏移或证据不足。ModelTrace 报告�
 - 每个 `host.model.execute_stream` 都显式指定 `account_id`、`client_key_id`、`provider=openai` 和 `protocol=openai`。主服务负责代理、鉴权、配额与最终计量；插件不搭建另一套 HTTP 出口。
 - 完整保留 Meow 的题目、参数、SSE 解析、答案归一化和概率评分。原源码放在 `vendor/meow`，文件哈希没有改变。Meow 版本 4.5.4；基线内容哈希冻结在每次任务中。
 - ModelTrace 的原始 `fingerprint.py` 和统一候选库固定在上游提交 `d4131b30243dfa05e70180b5eedde742103f1d73`，来源及逐文件哈希见 `vendor/modeltrace/SOURCE.json`。复用原始随机题目生成、数字解析、Hellinger / 有序数字块融合、温度校准和家族聚合，不引入原项目的网络服务或 API Key 表单。
-- ModelTrace 生成 3 份独立题目后持久化，断点续测与失败重试保留题目和检测方法。通过现有 Responses 流发送单条用户消息，采样使用供应商默认值，不套用 Meow 的 256-token 短答参数。沿用插件单题 90 秒上限、串行执行、人工续测和 50% 重试预算（3 个有效样本、最多 5 次尝试），而非原网页的自动重试流程。
+- ModelTrace 生成 3 份独立题目后持久化，断点续测与失败重试保留题目和检测方法。通过现有 Responses 流发送单条用户消息，采样使用供应商默认值，不套用 Meow 的 256-token 短答参数。沿用插件单题 90 秒上限、账户内逐题执行、人工续测和 50% 重试预算（3 个有效样本、最多 5 次尝试），而非原网页的自动重试流程。
 - `ready → running → ready/paused/completed`；显式停止转 `stopped`。发送前先写 pending，异常中断后按一次未知结果计入预算。首轮所有题优先于重试；成功样本不重复计数。
-- 全局推理并发为 1；网络等待时释放状态锁。页面暂停/结束保留当前题的结果。每题发送前及续测时核对账号 ID、平台、启用状态和冻结的上游身份；Cookie 回写、令牌刷新导致的凭据版本变化不视作换号，认证类型或上游身份变化则中止续测。
+- 同一插件进程的推理并发最多为 3；每个报告槽位独立加锁，阻止同一任务的重复发送及在途恢复。网络等待时释放状态锁。页面暂停/结束保留当前题的结果。每题发送前及续测时核对账号 ID、平台、启用状态和冻结的上游身份；Cookie 回写、令牌刷新导致的凭据版本变化不视作换号，认证类型或上游身份变化则中止续测。
 - 缺少稳定上游身份的账号，在已有样本且凭据更新时要求新建检测。旧检测没有身份快照时，只有尚无样本或凭据版本未变才会补存当前身份；其他旧检测保留历史，结束后新建一次即可使用稳定身份校验。
-- 状态只写插件私有 `runs` 命名空间，16 槽位，CAS 更新；不改主服务数据库结构、不安装观察器/中间件/维护钩子。
+- 报告写插件私有 `runs` 命名空间，16 槽位，使用 CAS；`automation` 命名空间仅声明以兼容旧数据，本版不读取或执行。没有维护回调或后台 CLI，不改主服务数据库结构或请求中间件。
 - 样本保留请求 ID、用量、错误与最多 256 字节回答摘录。Meow 保存归一化类别；ModelTrace 保存完整有序数字（最多 4096 个，超出则明确报错），用原评分器的有效长度判定剔除短答。评分不使用展示摘录，展示截短会标明。
 - 历史报告保留检测方法、基线版本和内容哈希，不因表单切换或后续基线更新重新计算。缺少方法字段的旧记录按 Meow 读取和续测，不改变原来的账号身份校验。
 - 主服务的模型映射、提示词或中间件可能影响实际响应，因此报告描述的是当前配置链路的行为，不把它解释成纯模型能力证明。
@@ -88,11 +91,11 @@ Meow 报告给出行为匹配、行为偏移或证据不足。ModelTrace 报告�
 
 ## 构建与验证
 
-构建工具：Docker Buildx、Node 24+、pnpm 10.10、Python 3.9+（安装包冒烟测试）、Rust 1.97（构建打包 CLI）。SDK 与 CLI 固定为同一个宿主提交 `fef52b3717019513108733549508377a309f129d`，前端依赖锁定在 `frontend/pnpm-lock.yaml`；不要直接换成浮动 `main`。在仓库根目录执行：
+构建工具：Docker Buildx、Node 24+、pnpm 10.10、Python 3.9+（安装包冒烟测试）、Rust 1.99.1（构建打包 CLI）。SDK 与 CLI 固定为同一个宿主提交 `16d8a3f87309d9346a5f204673390fe20478b40e`，前端依赖锁定在 `frontend/pnpm-lock.yaml`；不要直接换成浮动 `main`。在仓库根目录执行：
 
 ```sh
-cargo install --git https://github.com/zyycn/codex-proxy-rs.git \
-  --rev fef52b3717019513108733549508377a309f129d \
+cargo +1.99.1 install --git https://github.com/zyycn/codex-proxy-rs.git \
+  --rev 16d8a3f87309d9346a5f204673390fe20478b40e \
   --locked --root .tools/cpr-cli codex-proxy-plugin-cli
 CPR_PLUGIN_BIN="$PWD/.tools/cpr-cli/bin/cpr-plugin" ./scripts/build-linux.sh
 pnpm --dir frontend install --frozen-lockfile
@@ -102,9 +105,9 @@ pnpm --dir frontend build
 
 `build-linux.sh` 在 Docker 中构建内嵌 Python/NumPy 引擎、运行 Rust 的 `bundled-engine` 单测、编译 Linux 二进制、构建页面，最后使用官方 CLI 生成 `dist/*.tar.gz` 与校验文件。打包后在非 root、空环境、只读根目录和 `/tmp:noexec` 容器中运行离线协议验收；默认使用 `debian:bookworm-slim`，可通过 `SMOKE_IMAGE` 指定已准备好的 Debian 12 兼容镜像。
 
-直接运行不带 `bundled-engine` 的本机 `cargo test` 另依赖开发用 `meow-llm-detector:4.5.4` Docker 镜像；首次构建优先使用上面的完整脚本，无需这个额外镜像。
+本机离线验证也可用 Python 3.12 虚拟环境安装 `numpy==2.3.5 httpx==0.28.1 keyring==25.7.0`，然后指定 `MODEL_HEALTH_TEST_PYTHON=/absolute/path/venv/bin/python` 运行 `cargo +1.99.1 test --locked --manifest-path backend/Cargo.toml`。不指定该变量时，不带 `bundled-engine` 的本机 `cargo test` 另依赖开发用 `meow-llm-detector:4.5.4` Docker 镜像；首次构建优先使用上面的完整脚本，无需这个额外镜像。
 
-浏览器预览显式标注「模拟」，生产构建会剔除模拟宿主与模拟数据模块。`scripts/browser-qa.mjs` 支持 `PLAYWRIGHT_PATH`、`CHROME_BINARY`、`PREVIEW_URL`，检查双方法切换、选择保留、报告隔离、开始→暂停→继续→结束→历史，以及浅/深/窄屏、空/错/加载状态。`scripts/updates-browser-qa.mjs` 使用相同环境变量，验证来源地址、更新检查状态和检查失败时模型表单仍可使用，并在 `sandbox="allow-scripts"` 的隔离页面验证生产资源与地址复制。
+浏览器预览显式标注「模拟」，生产构建会剔除模拟宿主与模拟数据模块。`scripts/browser-qa.mjs` 支持 `PLAYWRIGHT_PATH`、`CHROME_BINARY`、`PREVIEW_URL`，检查双方法切换、选择保留、报告隔离、开始→暂停→继续→结束→历史，以及浅/深/窄屏、空/错/加载状态。`scripts/batch-browser-qa.mjs` 验证邮箱显示、串行与并行执行、暂停续测、取消和切走页面暂停；`scripts/updates-browser-qa.mjs` 使用相同环境变量，验证来源地址、更新检查状态和检查失败时模型表单仍可使用，并在 `sandbox="allow-scripts"` 的隔离页面验证生产资源与地址复制。
 
 `python3 scripts/package-smoke.py /absolute/path/plugin.tar.gz --continuous --modeltrace --updates` 在离线 SDK 宿主夹具中检查安装包、两种检测、更新回调和互不干扰。另加 `--updates-live` 时仅由测试宿主访问两个公开 GitHub API（不调用真实模型），验证安装包实际解析和缓存上游提交；网络失败会让该项验收失败。
 
@@ -112,7 +115,7 @@ pnpm --dir frontend build
 
 ## 回退
 
-安装新版时在插件管理中更新同一插件，保留现有 `runs` 状态。升级前保留旧安装包并备份宿主数据；需要回退时使用插件详情中的“回退版本”或“切换版本”，选择已安装、已接受且兼容的旧制品。配置回退不等于恢复私有数据，不能用卸载重装代替历史备份。停用本插件会停止插件功能，不修改主项目代码或其他插件。
+安装新版时在插件管理中更新同一插件，保留现有 `runs` 状态。升级前保留旧安装包并备份宿主数据；需要回退时使用插件详情中的“回退版本”或“切换版本”，选择已安装、已接受且兼容的旧制品。配置回退不等于恢复私有数据，不能用卸载重装代替历史备份。从 v0.3.0 升级前还应停掉旧外部 timer；已修改的健康业务组不会自动恢复成员，业务调用必须核对剩余可用账号。不修改主项目代码或其他插件。
 
 ## 后续开发提示词
 

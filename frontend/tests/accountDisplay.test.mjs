@@ -15,7 +15,12 @@ test('same name accounts use different emails as display names', () => {
   assert.equal(accountDisplayName({ name, email: 'b@example.com' }), 'b@example.com')
 })
 
-test('missing email falls back to trimmed name', () => {
-  assert.equal(accountDisplayName({ name: '  备用账号  ', email: null }), '备用账号')
-  assert.equal(accountDisplayName({ name: '主账号', email: '   ' }), '主账号')
+test('missing email displays an explicit placeholder', () => {
+  assert.equal(accountDisplayName({ name: '  备用账号  ', email: null }), '未提供邮箱')
+  assert.equal(accountDisplayName({ name: '主账号', email: '   ' }), '未提供邮箱')
+})
+
+test('account labels exclude names and IDs', () => {
+  assert.equal(accountDisplayName({ id: 'a', name: 'openai OAuth', email: 'x@example.com' }), 'x@example.com')
+  assert.equal(accountDisplayName({ id: 'b', name: '', email: null }), '未提供邮箱')
 })

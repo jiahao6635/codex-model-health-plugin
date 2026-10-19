@@ -101,13 +101,14 @@ impl Engine {
                 output,
             });
         }
-        let result = tokio::time::timeout(
-            Duration::from_secs(20),
-            slot.as_mut().unwrap().exchange(request),
-        )
-        .await;
+        // 查询期间由当前 future 持有子进程；外层 worker 取消也会丢弃它，避免残留响应串到下一次评分。
+        let mut worker = slot.take().unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(20), worker.exchange(request)).await;
         match result {
-            Ok(Ok(value)) => Ok(value),
+            Ok(Ok(value)) => {
+                *slot = Some(worker);
+                Ok(value)
+            }
             Ok(Err(error)) => {
                 *slot = None;
                 Err(error)
@@ -165,5 +166,36 @@ impl Drop for Engine {
         if let Some(path) = &self.directory {
             let _ = std::fs::remove_dir_all(path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[tokio::test]
+    async fn cancelled_exchange_discards_partial_response_before_next_query() {
+        let script = r#"while IFS= read -r line; do
+if [ "$line" = '{"op":"slow"}' ]; then
+printf '{"ok":true,"data":"stale"}'
+sleep 0.3
+printf '\n'
+else
+printf '{"ok":true,"data":"fresh"}\n'
+fi
+done"#;
+        let engine = Engine::command(vec!["sh".into(), "-c".into(), script.into()]);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                engine.query(json!({"op":"slow"}))
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            engine.query(json!({"op":"fresh"})).await.unwrap(),
+            json!("fresh")
+        );
     }
 }

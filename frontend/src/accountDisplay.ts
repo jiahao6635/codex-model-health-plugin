@@ -1,10 +1,9 @@
 export interface AccountDisplayInput {
+  id?: string
   name: string
   email?: string | null
 }
 
 export function accountDisplayName(account: AccountDisplayInput): string {
-  const email = account.email?.trim()
-  if (email) return email
-  return account.name.trim()
+  return account.email?.trim() || '未提供邮箱'
 }
